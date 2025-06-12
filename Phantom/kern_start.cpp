@@ -88,37 +88,20 @@ void PHTM::solveSysCtlChildrenAddr(void *user __unused, KernelPatcher &Patcher) 
             DBGLOG(MODULE_INIT, "Found 'sbvmm' in revpatch boot-arg, skipping VMM module initialization.");
         }
     }
-    
-    if (initializeVMM) {
+      if (initializeVMM) {
         DBGLOG(MODULE_INIT, "Initializing VMM module.");
-        try {
-            VMM::init(Patcher);
-        } catch (...) {
-            DBGLOG(MODULE_ERROR, "VMM module initialization failed, continuing...");
-        }
+        VMM::init(Patcher);
     }
     // End of Conditional VMM Initialization
 	
     DBGLOG(MODULE_INIT, "Initializing KMP module.");
-    try {
-        KMP::init(Patcher);
-    } catch (...) {
-        DBGLOG(MODULE_ERROR, "KMP module initialization failed, continuing...");
-    }
+    KMP::init(Patcher);
 	
     DBGLOG(MODULE_INIT, "Initializing SLP module.");
-    try {
-        SLP::init(Patcher);
-    } catch (...) {
-        DBGLOG(MODULE_ERROR, "SLP module initialization failed, continuing...");
-    }
+    SLP::init(Patcher);
 	
 	DBGLOG(MODULE_INIT, "Initializing IOR module.");
-    try {
-        IOR::init(Patcher);
-    } catch (...) {
-        DBGLOG(MODULE_ERROR, "IOR module initialization failed, continuing...");
-    }
+    IOR::init(Patcher);
 	
 	// DBGLOG(MODULE_INIT, "Initializing CSR module.");
 	// CSR::init(Patcher);

@@ -56,13 +56,14 @@ void PHTM::solveSysCtlChildrenAddr(void *user __unused, KernelPatcher &Patcher) 
     DBGLOG(MODULE_SSYSCTL, "PHTM::solveSysCtlChildrenAddr called successfully. Attempting to resolve and store _sysctl__children address.");
 	
     PHTM::gSysctlChildrenAddr = PHTM::sysctlChildrenAddr(Patcher);
-	
-    if (PHTM::gSysctlChildrenAddr) {
-        DBGLOG(MODULE_SSYSCTL, "Successfully resolved and stored _sysctl__children address: 0x%llx", PHTM::gSysctlChildrenAddr);
-    } else {
-        DBGLOG(MODULE_SSYSCTL, "Failed to resolve _sysctl__children address. PHTM::gSysctlChildrenAddr is NULL.");
-		panic(MODULE_SHORT, "Failed to resolve _sysctl__children address. PHTM::gSysctlChildrenAddr is NULL.");
+    
+    if (!PHTM::gSysctlChildrenAddr) {
+        DBGLOG(MODULE_SSYSCTL, "Failed to resolve _sysctl__children address. Skipping further setup.");
+        
+        return;
     }
+
+    DBGLOG(MODULE_SSYSCTL, "Successfully resolved and stored _sysctl__children address: 0x%llx", PHTM::gSysctlChildrenAddr);
 	
     // Now, initialize dependent modules, passing the KernelPatcher instance
 	

@@ -64,23 +64,24 @@ int phtm_sysctl_vmm_present(struct sysctl_oid *oidp, void *arg1, int arg2, struc
 }
 
 // Function to reroute kern.hv_vmm_present function to our own custom one
-bool reRouteHvVmm(KernelPatcher &patcher) {
-
-    // Ensure that sysctlChildrenAddress exists before continuing
+bool reRouteHvVmm(KernelPatcher &patcher) {    // Ensure that sysctlChildrenAddress exists before continuing
     if (!PHTM::gSysctlChildrenAddr) {
 		DBGLOG(MODULE_ERROR, "Failed to resolve _sysctl__children passed to function reRouteHvVmm.");
-		panic(MODULE_RRHVM, "Failed to resolve _sysctl__children passed to function reRouteHvVmm");
+		// Don't panic - just return false to indicate failure
         return false;
 	} else {
 		DBGLOG(MODULE_RRHVM, "Got address 0x%llx for _sysctl__children passed to function reRouteHvVmm.", PHTM::gSysctlChildrenAddr);
 	}
 
     // Case the address to sysctl_oid_list*
-    sysctl_oid_list *sysctlChildren = reinterpret_cast<sysctl_oid_list *>(PHTM::gSysctlChildrenAddr);
-
-    // traverse the sysctl tree to locate 'kern'
+    sysctl_oid_list *sysctlChildren = reinterpret_cast<sysctl_oid_list *>(PHTM::gSysctlChildrenAddr);    // traverse the sysctl tree to locate 'kern'
     sysctl_oid *kernNode = nullptr;
     SLIST_FOREACH(kernNode, sysctlChildren, oid_link) {
+        // Add safety check for NULL node and name
+        if (!kernNode || !kernNode->oid_name) {
+            DBGLOG(MODULE_RRHVM, "Encountered NULL node or name during traversal, skipping");
+            continue;
+        }
         if (strcmp(kernNode->oid_name, "kern") == 0) {
             DBGLOG(MODULE_RRHVM, "Found 'kern' node.");
             break;
@@ -91,12 +92,20 @@ bool reRouteHvVmm(KernelPatcher &patcher) {
     if (!kernNode) {
         DBGLOG(MODULE_RRHVM, "Failed to locate 'kern' node in sysctl tree.");
         return false;
-    }
-
-    // traverse 'kern' to find 'hv_vmm_present'
+    }    // traverse 'kern' to find 'hv_vmm_present'
     sysctl_oid_list *kernChildren = reinterpret_cast<sysctl_oid_list *>(kernNode->oid_arg1);
+    if (!kernChildren) {
+        DBGLOG(MODULE_RRHVM, "kern node has no children");
+        return false;
+    }
+    
     sysctl_oid *vmmNode = nullptr;
     SLIST_FOREACH(vmmNode, kernChildren, oid_link) {
+        // Add safety check for NULL node and name
+        if (!vmmNode || !vmmNode->oid_name) {
+            DBGLOG(MODULE_RRHVM, "Encountered NULL node or name in kern children, skipping");
+            continue;
+        }
         if (strcmp(vmmNode->oid_name, "hv_vmm_present") == 0) {
             DBGLOG(MODULE_RRHVM, "Found 'hv_vmm_present' node.");
             break;
@@ -135,17 +144,15 @@ void VMM::init(KernelPatcher &Patcher) {
 
 	// Register a request to reroute to our custom function
     DBGLOG(MODULE_VMM, "VMM::init() called. VMM module is starting.");
-	
-	if (!PHTM::gSysctlChildrenAddr) {
+		if (!PHTM::gSysctlChildrenAddr) {
         DBGLOG(MODULE_ERROR, "PHTM::gSysctlChildrenAddr is not set. Cannot perform VMM rerouting.");
-		panic(MODULE_LONG, "PHTM::gSysctlChildrenAddr is not set.");
+		// Don't panic - just return to prevent system crash
         return;
-    }
-	
-    // Perform rerouting, as Patcher is available and gSysctlChildrenAddr is known (hopefully by now, yes it is)
+    }    // Perform rerouting, as Patcher is available and gSysctlChildrenAddr is known (hopefully by now, yes it is)
     if (!reRouteHvVmm(Patcher)) {
 		DBGLOG(MODULE_ERROR, "Failed to reroute kern.hv_vmm_present.");
-		panic(MODULE_LONG, "Failed to reroute kern.hv_vmm_present.");
+		// Don't panic - just log error and continue
+		return;
     } else {
         DBGLOG(MODULE_INFO, "kern.hv_vmm_present rerouted successfully.");
     }

@@ -22,22 +22,32 @@ mach_vm_address_t PHTM::gSysctlChildrenAddr = 0;
 const bool PHTM::IS_INTERNAL = false; // MUST CHANCE THIS TO FALSE BEFORE CREATING COMMITS
 
 // Function to get _sysctl__children memory address
-mach_vm_address_t PHTM::sysctlChildrenAddr(KernelPatcher &patcher) {
-	
-    // Resolve the _sysctl__children symbol with the given patcher
+mach_vm_address_t PHTM::sysctlChildrenAddr(KernelPatcher &patcher) {    // Resolve the _sysctl__children symbol with the given patcher
     mach_vm_address_t resolvedAddress = patcher.solveSymbol(KernelPatcher::KernelID, "_sysctl__children");
-
+    
     // Check if the address was successfully resolved, else return 0
     if (resolvedAddress) {
         DBGLOG(MODULE_SYSCA, "Resolved _sysctl__children at address: 0x%llx", resolvedAddress);
+        
+        // Validate the resolved address is reasonable for kernel space
+        if (resolvedAddress < 0xffffff8000000000ULL) {
+            DBGLOG(MODULE_SYSCA, "Resolved address appears invalid (too low): 0x%llx", resolvedAddress);
+            return 0;
+        }
 
-        // Iterate and log OIDs for debugging (can be extensive)
-        #if DEBUG
+        // Disable dangerous debug iteration that can cause kernel panics
+        #if DEBUG && 0
         sysctl_oid_list *sysctlChildrenList = reinterpret_cast<sysctl_oid_list *>(resolvedAddress);
         DBGLOG(MODULE_SYSCA, "Sysctl children list at address: 0x%llx", reinterpret_cast<mach_vm_address_t>(sysctlChildrenList));
         sysctl_oid *oid;
         SLIST_FOREACH(oid, sysctlChildrenList, oid_link) {
-            DBGLOG(MODULE_SYSCA, "OID Name: %s, OID Number: %d", oid->oid_name, oid->oid_number);
+            // Add safety checks to prevent crashes
+            if (oid && oid->oid_name) {
+                DBGLOG(MODULE_SYSCA, "OID Name: %s, OID Number: %d", oid->oid_name, oid->oid_number);
+            } else {
+                DBGLOG(MODULE_SYSCA, "Found null OID or OID name, stopping iteration");
+                break;
+            }
         }
         #endif
         
@@ -72,28 +82,43 @@ void PHTM::solveSysCtlChildrenAddr(void *user __unused, KernelPatcher &Patcher) 
     char revpatchValue[256] = {0};
     if (PE_parse_boot_argn("revpatch", revpatchValue, sizeof(revpatchValue))) {
         // The 'revpatch' boot-arg exists. Now check for "sbvmm".
-        // strstr() will return a non-NULL pointer if "sbvmm" is found anywhere in the value string.
-        if (strstr(revpatchValue, "sbvmm") != nullptr) {
+        // strstr() will return a non-NULL pointer if "sbvmm" is found anywhere in the value string.        if (strstr(revpatchValue, "sbvmm") != nullptr) {
             // "sbvmm" was found, so we will NOT initialize the VMM module.
             initializeVMM = false;
             DBGLOG(MODULE_INIT, "Found 'sbvmm' in revpatch boot-arg, skipping VMM module initialization.");
         }
     }
-
+    
     if (initializeVMM) {
         DBGLOG(MODULE_INIT, "Initializing VMM module.");
-        VMM::init(Patcher);
+        try {
+            VMM::init(Patcher);
+        } catch (...) {
+            DBGLOG(MODULE_ERROR, "VMM module initialization failed, continuing...");
+        }
     }
     // End of Conditional VMM Initialization
 	
     DBGLOG(MODULE_INIT, "Initializing KMP module.");
-    KMP::init(Patcher);
+    try {
+        KMP::init(Patcher);
+    } catch (...) {
+        DBGLOG(MODULE_ERROR, "KMP module initialization failed, continuing...");
+    }
 	
     DBGLOG(MODULE_INIT, "Initializing SLP module.");
-	SLP::init(Patcher);
+    try {
+        SLP::init(Patcher);
+    } catch (...) {
+        DBGLOG(MODULE_ERROR, "SLP module initialization failed, continuing...");
+    }
 	
 	DBGLOG(MODULE_INIT, "Initializing IOR module.");
-	IOR::init(Patcher);
+    try {
+        IOR::init(Patcher);
+    } catch (...) {
+        DBGLOG(MODULE_ERROR, "IOR module initialization failed, continuing...");
+    }
 	
 	// DBGLOG(MODULE_INIT, "Initializing CSR module.");
 	// CSR::init(Patcher);
@@ -181,10 +206,9 @@ PluginConfiguration ADDPR(config) {
     bootargOff,
     arrsize(bootargOff),
     bootargDebug,
-    arrsize(bootargDebug),
-    bootargBeta,
+    arrsize(bootargDebug),    bootargBeta,
     arrsize(bootargBeta),
-	KernelVersion::HighSierra, // this is for testing, only seq is officially known to work
+	KernelVersion::Monterey, // Narrowed range for initial testing - was HighSierra
 	KernelVersion::Sequoia,
     []() {
         

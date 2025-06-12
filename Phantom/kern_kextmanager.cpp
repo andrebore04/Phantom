@@ -143,12 +143,11 @@ bool reRouteCopyLoadedKextInfo(KernelPatcher &patcher) {
 
 // Function for the KMP init routine
 void KMP::init(KernelPatcher &Patcher) {
-    DBGLOG(MODULE_KMP, "KMP::init() called. KMP module is starting.");
-	
-    // Perform rerouting, as Patcher is available and known (hopefully by now, yes it is)
+    DBGLOG(MODULE_KMP, "KMP::init() called. KMP module is starting.");    // Perform rerouting, as Patcher is available and known (hopefully by now, yes it is)
     if (!reRouteCopyLoadedKextInfo(Patcher)) {
 		DBGLOG(MODULE_ERROR, "Failed to reroute copyLoadedKextInfo.");
-		panic(MODULE_LONG, "Failed to reroute copyLoadedKextInfo.");
+		// Don't panic - just log error and continue
+		return;
     } else {
         DBGLOG(MODULE_INFO, "copyLoadedKextInfo rerouted successfully.");
     }

@@ -137,13 +137,11 @@ IOService *phtm_IOService_getMatchingService(OSDictionary *matching, IOService *
     // If the process is one we are targeting and a service was found...
     if (isProcFiltered(procName)) {
         const char *className = original_service->getMetaClass()->getClassName();
-        
-        // Check if the returned service's class is on our blocklist.
+          // Check if the returned service's class is on our blocklist.
         if (isClassFiltered(className)) {
             DBGLOG(MODULE_IOR, "Hiding single service of class '%s' from process '%s'", className, procName);
-            // The service was found, but we are hiding it. We must release it
-            // to prevent a memory leak and return nullptr.
-            original_service->release();
+            // Don't release - just return nullptr to hide the service
+            // The original function maintains ownership
             return nullptr;
         }
     }
@@ -203,11 +201,17 @@ OSObject *phtm_IORegistryEntry_getProperty_os_symbol(const IORegistryEntry *that
 
             if (str_prop) {
                  DBGLOG(MODULE_IOR, "getProperty called by '%s' (PID: %d) on class '%s' for key '%s' returned OSString: '%s'",
-                       procName, pid, entryClassName, keyName, str_prop->getCStringNoCopy());
-            } else if (data_prop) {
+                       procName, pid, entryClassName, keyName, str_prop->getCStringNoCopy());            } else if (data_prop) {
                  // Often, strings are stored in OSData. We can try to print it if it's null-terminated.
-                 DBGLOG(MODULE_IOR, "getProperty called by '%s' (PID: %d) on class '%s' for key '%s' returned OSData: '%.*s' (size: %d)",
-                       procName, pid, entryClassName, keyName, (int)data_prop->getLength(), (const char*)data_prop->getBytesNoCopy(), data_prop->getLength());
+                 // Add bounds checking to prevent buffer overruns
+                 uint32_t dataLen = data_prop->getLength();
+                 if (dataLen > 0 && dataLen < 1024) { // Reasonable size limit
+                     DBGLOG(MODULE_IOR, "getProperty called by '%s' (PID: %d) on class '%s' for key '%s' returned OSData (size: %d)",
+                           procName, pid, entryClassName, keyName, dataLen);
+                 } else {
+                     DBGLOG(MODULE_IOR, "getProperty called by '%s' (PID: %d) on class '%s' for key '%s' returned OSData with size: %d (too large to display)",
+                           procName, pid, entryClassName, keyName, dataLen);
+                 }
             } else {
                  DBGLOG(MODULE_IOR, "getProperty called by '%s' (PID: %d) on class '%s' for key '%s' returned object of class '%s'",
                        procName, pid, entryClassName, keyName,

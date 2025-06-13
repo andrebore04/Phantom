@@ -6,6 +6,10 @@
 //
 
 #include "kern_kextmanager.hpp"
+#include <libkern/libkern.h>
+
+// Constants
+#define MAX_PROC_NAME_LEN 256
 
 // Pointer to original declaration
 static KMP::_OSKext_copyLoadedKextInfo_t original_OSKext_copyLoadedKextInfo = nullptr;
@@ -26,9 +30,11 @@ OSDictionary *phtm_OSKext_copyLoadedKextInfo(OSArray *kextIdentifiers, OSArray *
 	
 	pid_t procPid = proc_pid(currentProcess);
 	char procName[MAX_PROC_NAME_LEN] = {0}; // Initialize buffer
-	
-	// Safely get process name
-	if (proc_name(procPid, procName, sizeof(procName)) <= 0) {
+		// Safely get process name (proc_name returns void)
+	proc_name(procPid, procName, sizeof(procName));
+	// Ensure null termination
+	procName[sizeof(procName) - 1] = '\0';
+	if (strlen(procName) == 0) {
 		snprintf(procName, sizeof(procName), "unknown");
 	}
 
@@ -54,109 +60,102 @@ OSDictionary *phtm_OSKext_copyLoadedKextInfo(OSArray *kextIdentifiers, OSArray *
 	// Create a new dictionary to store the filtered results.
 	// OSDictionary::withCapacity returns an object with a retain count of 1.
 	OSDictionary *filteredDict = OSDictionary::withCapacity(originalCount > 0 ? originalCount : 1); // Ensure at least 1
-
 	if (!filteredDict) {
 		DBGLOG(MODULE_CLKI, "Failed to allocate filteredDict for '%s' (PID: %d). Returning original (unmodified) dictionary.", procName, procPid);
 		return originalDict;
 	}
 
-			unsigned int removedCount = 0;
-			const char *filterSubstrings[] = {
-				"org.Carnations",
-				"org.acidanthera",
-				"as.vit9696",
-				"com.sn-labs"
-			};
+	unsigned int removedCount = 0;
+	const char *filterSubstrings[] = {
+		"org.Carnations",
+		"org.acidanthera",
+		"as.vit9696",
+		"com.sn-labs"
+	};
 
-			unsigned int numFilters = sizeof(filterSubstrings) / sizeof(filterSubstrings[0]);
-			OSCollectionIterator *iter = OSCollectionIterator::withCollection(originalDict);
-			if (iter) {
-				OSObject *keyObject;
-				while ((keyObject = iter->getNextObject())) {
-					OSString *bundleID = OSDynamicCast(OSString, keyObject); // Keys are bundle IDs (OSString)
-					if (bundleID) {
-						OSObject *value = originalDict->getObject(bundleID); // Get the associated kext info
+	unsigned int numFilters = sizeof(filterSubstrings) / sizeof(filterSubstrings[0]);
+	OSCollectionIterator *iter = OSCollectionIterator::withCollection(originalDict);
+	if (iter) {
+		OSObject *keyObject;
+		while ((keyObject = iter->getNextObject())) {
+			OSString *bundleID = OSDynamicCast(OSString, keyObject); // Keys are bundle IDs (OSString)
+			if (bundleID) {
+				OSObject *value = originalDict->getObject(bundleID); // Get the associated kext info
 
-						if (value) { // Should always be true if keyObject is valid
-							const char *bundleIDCStr = bundleID->getCStringNoCopy();
-							bool shouldFilterThisKext = false;
-							const char *matchedFilter = nullptr;
+				if (value) { // Should always be true if keyObject is valid
+					const char *bundleIDCStr = bundleID->getCStringNoCopy();
+					bool shouldFilterThisKext = false;
+					const char *matchedFilter = nullptr;
 
-							if (bundleIDCStr) { // Ensure C-string is valid
-								for (unsigned int i = 0; i < numFilters; ++i) {
-									if (strstr(bundleIDCStr, filterSubstrings[i]) != nullptr) {
-										shouldFilterThisKext = true;
-										matchedFilter = filterSubstrings[i];
+					if (bundleIDCStr) { // Ensure C-string is valid
+						for (unsigned int i = 0; i < numFilters; ++i) {
+							// Use a safer string search to avoid ambiguity issues
+							size_t bundleLen = strlen(bundleIDCStr);
+							size_t filterLen = strlen(filterSubstrings[i]);
+							bool found = false;
+							
+							if (bundleLen >= filterLen) {
+								for (size_t j = 0; j <= bundleLen - filterLen; ++j) {
+									if (strncmp(bundleIDCStr + j, filterSubstrings[i], filterLen) == 0) {
+										found = true;
 										break;
 									}
 								}
 							}
-
-							if (shouldFilterThisKext) {
-								DBGLOG(MODULE_CLKI, "Filtering out kext: %s (filter match: '%s') for '%s' (PID: %d).", bundleIDCStr ? bundleIDCStr : "UnknownBundleID", matchedFilter, procName, procPid);
-								removedCount++;
-							} else {
-								// This kext should be included. Add it to the filtered dictionary.
-								// filteredDict->setObject retains both key and value.
-								filteredDict->setObject(bundleID, value);
+							
+							if (found) {
+								shouldFilterThisKext = true;
+								matchedFilter = filterSubstrings[i];
+								break;
 							}
 						}
 					}
+
+					if (shouldFilterThisKext) {
+						DBGLOG(MODULE_CLKI, "Filtering out kext: %s (filter match: '%s') for '%s' (PID: %d).", bundleIDCStr ? bundleIDCStr : "UnknownBundleID", matchedFilter, procName, procPid);
+						removedCount++;
+					} else {
+						// This kext should be included. Add it to the filtered dictionary.
+						// filteredDict->setObject retains both key and value.
+						filteredDict->setObject(bundleID, value);
+					}
 				}
-				iter->release(); // Release the iterator
-			} else {
-				DBGLOG(MODULE_CLKI, "Failed to create iterator for originalDict for '%s' (PID: %d). Returning original (unmodified) dictionary.", procName, procPid);
-				filteredDict->release(); // Release the empty filteredDict we allocated
-				return originalDict;     // Return the originalDict (already retained)
-			} // we couldn't modify the dict, something went wrong, return the og dict
-
-			unsigned int filteredCount = filteredDict->getCount();
-			DBGLOG(MODULE_CLKI, "Original dict had %u entries. Returning modified dict with %u entries (%u removed) for '%s' (PID: %d).", originalCount, filteredCount, removedCount, procName, procPid);
-			originalDict->release();
-			return filteredDict;
-
-		} else { // originalDict was nullptr from the call
-			DBGLOG(MODULE_CLKI, "Original function returned nullptr for '%s' (PID: %d).", procName, procPid);
-			return nullptr;
+			}
 		}
-	} else { // original_OSKext_copyLoadedKextInfo function pointer was null (hooking failed badly)
-		DBGLOG(MODULE_CLKI, "Original OSKext::copyLoadedKextInfo is null for '%s' (PID: %d). Returning empty dictionary.", procName, procPid);
-		// Fallback: return a new, empty, retained dictionary
-		return OSDictionary::withCapacity(0);
+		iter->release(); // Release the iterator
+	} else {
+		DBGLOG(MODULE_CLKI, "Failed to create iterator for originalDict for '%s' (PID: %d). Returning original (unmodified) dictionary.", procName, procPid);
+		filteredDict->release(); // Release the empty filteredDict we allocated
+		return originalDict;     // Return the originalDict (already retained)
 	}
+
+	unsigned int filteredCount = filteredDict->getCount();
+	DBGLOG(MODULE_CLKI, "Original dict had %u entries. Returning modified dict with %u entries (%u removed) for '%s' (PID: %d).", originalCount, filteredCount, removedCount, procName, procPid);
+	originalDict->release();
+	return filteredDict;
         
 }
 
 // Function to reroute CopyLoadedKextInfo
 bool reRouteCopyLoadedKextInfo(KernelPatcher &patcher) {
-    
     const char *mangledName = "__ZN6OSKext18copyLoadedKextInfoEP7OSArrayS1_"; // This has only been setup for Seq, and wil fail on other versions, probably
-    mach_vm_address_t functionAddress = patcher.solveSymbol(KernelPatcher::KernelID, mangledName);
-
-    if (functionAddress) {
-        DBGLOG(MODULE_RRKM, "Resolved %s at 0x%llx", mangledName, functionAddress);
-
-        // Attempt to route the function
-        original_OSKext_copyLoadedKextInfo = reinterpret_cast<KMP::_OSKext_copyLoadedKextInfo_t>(
-            patcher.routeFunction(
-                functionAddress,
-                reinterpret_cast<mach_vm_address_t>(phtm_OSKext_copyLoadedKextInfo),
-                true // Create a trampoline to call the original, this is needed to sanitize the OG content
-            )
-        );
-
-        if (patcher.getError() == KernelPatcher::Error::NoError && original_OSKext_copyLoadedKextInfo) {
+    
+    // Create RouteRequest for the function  
+    KernelPatcher::RouteRequest requests[] = {
+        KernelPatcher::RouteRequest(mangledName, phtm_OSKext_copyLoadedKextInfo, original_OSKext_copyLoadedKextInfo)
+    };
+    
+    // Attempt to route the function using template version
+    if (patcher.routeMultiple(KernelPatcher::KernelID, requests, 1)) {
+        if (original_OSKext_copyLoadedKextInfo) {
             DBGLOG(MODULE_RRKM, "Successfully routed %s.", mangledName);
             return true;
         } else {
-			DBGLOG(MODULE_RRKM, "Failed to route %s. Lilu error: %d. Original ptr: %p", mangledName, patcher.getError(), original_OSKext_copyLoadedKextInfo);
-            original_OSKext_copyLoadedKextInfo = nullptr;
-            patcher.clearError();
+            DBGLOG(MODULE_RRKM, "Failed to route %s - original function pointer is null", mangledName);
             return false;
         }
     } else {
-        DBGLOG(MODULE_RRKM, "Failed to resolve symbol %s. Lilu error: %d", mangledName, patcher.getError());
-        patcher.clearError();
+        DBGLOG(MODULE_RRKM, "routeMultiple failed for %s", mangledName);
         return false;
     }
     

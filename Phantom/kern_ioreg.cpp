@@ -34,12 +34,12 @@ const char *IOR::filteredClasses[] = {
 
 // Generic isProcFiltered Helper Function
 static bool isProcFiltered(const char *procName) {
-    if (!procName) {
+    if (!procName || strnlen(procName, MAX_PROC_NAME_LEN) >= MAX_PROC_NAME_LEN) {
         return false;
     }
     const size_t num_filtered = sizeof(IOR::filteredProcs) / sizeof(IOR::filteredProcs[0]);
     for (size_t i = 0; i < num_filtered; ++i) {
-        if (strcmp(procName, IOR::filteredProcs[i].name) == 0) {
+        if (IOR::filteredProcs[i].name && strcmp(procName, IOR::filteredProcs[i].name) == 0) {
             return true;
         }
     }
@@ -48,7 +48,7 @@ static bool isProcFiltered(const char *procName) {
 
 // Helper to check if a class name should be filtered
 static bool isClassFiltered(const char *className) {
-    if (!className) {
+    if (!className || strnlen(className, 256) >= 256) {
         return false;
     }
     const size_t num_filtered = sizeof(IOR::filteredClasses) / sizeof(IOR::filteredClasses[0]);

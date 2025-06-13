@@ -13,31 +13,52 @@ static KMP::_OSKext_copyLoadedKextInfo_t original_OSKext_copyLoadedKextInfo = nu
 // Phantom's custom OSKext::copyLoadedKextInfo function, which cleanses the dict from 3rd party extensions
 OSDictionary *phtm_OSKext_copyLoadedKextInfo(OSArray *kextIdentifiers, OSArray *bundlePaths) {
 
-	// Retrieve current process information
+	// Enhanced safety checks for parameters
 	proc_t currentProcess = current_proc();
+	if (!currentProcess) {
+		DBGLOG(MODULE_ERROR, "Failed to get current process in phtm_OSKext_copyLoadedKextInfo");
+		// Fall back to original function if available
+		if (original_OSKext_copyLoadedKextInfo) {
+			return original_OSKext_copyLoadedKextInfo(kextIdentifiers, bundlePaths);
+		}
+		return nullptr;
+	}
+	
 	pid_t procPid = proc_pid(currentProcess);
-	char procName[MAX_PROC_NAME_LEN];
-	proc_name(procPid, procName, sizeof(procName));
+	char procName[MAX_PROC_NAME_LEN] = {0}; // Initialize buffer
+	
+	// Safely get process name
+	if (proc_name(procPid, procName, sizeof(procName)) <= 0) {
+		snprintf(procName, sizeof(procName), "unknown");
+	}
 
 	// Log the calling process information
 	DBGLOG(MODULE_CLKI, "Process '%s' (PID: %d) called phtm_OSKext_copyLoadedKextInfo.", procName, procPid);
 
-	if (original_OSKext_copyLoadedKextInfo) {
-		DBGLOG(MODULE_CLKI, "Calling original OSKext::copyLoadedKextInfo function for '%s' (PID: %d).", procName, procPid);
-		OSDictionary *originalDict = original_OSKext_copyLoadedKextInfo(kextIdentifiers, bundlePaths);
+	if (!original_OSKext_copyLoadedKextInfo) {
+		DBGLOG(MODULE_ERROR, "Original OSKext::copyLoadedKextInfo function is null for '%s' (PID: %d)", procName, procPid);
+		return nullptr;
+	}
+	
+	DBGLOG(MODULE_CLKI, "Calling original OSKext::copyLoadedKextInfo function for '%s' (PID: %d).", procName, procPid);
+	OSDictionary *originalDict = original_OSKext_copyLoadedKextInfo(kextIdentifiers, bundlePaths);
 
-		if (originalDict) {
-			unsigned int originalCount = originalDict->getCount();
-			DBGLOG(MODULE_CLKI, "Original function returned a dictionary with %u entries for '%s' (PID: %d).", originalCount, procName, procPid);
+	if (!originalDict) {
+		DBGLOG(MODULE_CLKI, "Original function returned null dictionary for '%s' (PID: %d).", procName, procPid);
+		return nullptr;
+	}
+	
+	unsigned int originalCount = originalDict->getCount();
+	DBGLOG(MODULE_CLKI, "Original function returned a dictionary with %u entries for '%s' (PID: %d).", originalCount, procName, procPid);
 
-			// Create a new dictionary to store the filtered results.
-			// OSDictionary::withCapacity returns an object with a retain count of 1.
-			OSDictionary *filteredDict = OSDictionary::withCapacity(originalCount > 0 ? originalCount -1 : 0); // Estimate capacity
+	// Create a new dictionary to store the filtered results.
+	// OSDictionary::withCapacity returns an object with a retain count of 1.
+	OSDictionary *filteredDict = OSDictionary::withCapacity(originalCount > 0 ? originalCount : 1); // Ensure at least 1
 
-			if (!filteredDict) {
-				DBGLOG(MODULE_CLKI, "Failed to allocate filteredDict for '%s' (PID: %d). Returning original (unmodified) dictionary.", procName, procPid);
-				return originalDict;
-			}
+	if (!filteredDict) {
+		DBGLOG(MODULE_CLKI, "Failed to allocate filteredDict for '%s' (PID: %d). Returning original (unmodified) dictionary.", procName, procPid);
+		return originalDict;
+	}
 
 			unsigned int removedCount = 0;
 			const char *filterSubstrings[] = {

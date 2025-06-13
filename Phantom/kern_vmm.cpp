@@ -6,6 +6,8 @@
 //
 
 #include "kern_vmm.hpp"
+#include <Headers/kern_mach.hpp>
+#include <Headers/kern_patcher.hpp>
 
 // static integer to keep track of initial and post reroute presence.
 int VMM::hvVmmPresent = 0;
@@ -28,11 +30,25 @@ const PHTM::DetectedProcess VMM::filteredProcs[] = {
 // Phantom's custom sysctl VMM present function
 int phtm_sysctl_vmm_present(struct sysctl_oid *oidp, void *arg1, int arg2, struct sysctl_req *req) {
     
+    // Enhanced safety checks for parameters
+    if (!oidp || !req) {
+        DBGLOG(MODULE_ERROR, "Invalid parameters passed to phtm_sysctl_vmm_present");
+        return EINVAL;
+    }
+    
     // Retrieve the current process information
     proc_t currentProcess = current_proc();
-    pid_t procPid = proc_pid(currentProcess);
-    char procName[MAX_PROC_NAME_LEN] = {0};
+    if (!currentProcess) {
+        DBGLOG(MODULE_ERROR, "Failed to get current process in phtm_sysctl_vmm_present");
+        return EINVAL;
+    }
+      pid_t procPid = proc_pid(currentProcess);
+    char procName[MAX_PROC_NAME_LEN] = {0}; // Initialize buffer
+    
+    // Safely get process name (proc_name returns void, not int)
     proc_name(procPid, procName, sizeof(procName));
+    // Ensure null termination
+    procName[MAX_PROC_NAME_LEN - 1] = '\0';
     
     // Default to 0 (VMM not present). This will be the value for any process NOT in our list.
     int value_to_return = 0;
@@ -71,28 +87,61 @@ bool reRouteHvVmm(KernelPatcher &patcher) {    // Ensure that sysctlChildrenAddr
         return false;
 	} else {
 		DBGLOG(MODULE_RRHVM, "Got address 0x%llx for _sysctl__children passed to function reRouteHvVmm.", PHTM::gSysctlChildrenAddr);
-	}
+	}    // Validate the address is in kernel space
+    if (PHTM::gSysctlChildrenAddr < 0xffffff8000000000ULL) {
+        DBGLOG(MODULE_RRHVM, "Invalid _sysctl__children address: 0x%llx", PHTM::gSysctlChildrenAddr);
+        return false;
+    }
 
-    // Case the address to sysctl_oid_list*
-    sysctl_oid_list *sysctlChildren = reinterpret_cast<sysctl_oid_list *>(PHTM::gSysctlChildrenAddr);    // traverse the sysctl tree to locate 'kern'
+    // Cast the address to sysctl_oid_list* with additional validation
+    sysctl_oid_list *sysctlChildren = reinterpret_cast<sysctl_oid_list *>(PHTM::gSysctlChildrenAddr);
+    
+    if (!sysctlChildren) {
+        DBGLOG(MODULE_RRHVM, "sysctlChildren is null after casting");
+        return false;
+    }
+    
+    // traverse the sysctl tree to locate 'kern'
     sysctl_oid *kernNode = nullptr;
+    int traversalCount = 0;
+    const int MAX_TRAVERSAL = 1000; // Prevent infinite loops
+    
     SLIST_FOREACH(kernNode, sysctlChildren, oid_link) {
-        // Add safety check for NULL node and name
-        if (!kernNode || !kernNode->oid_name) {
-            DBGLOG(MODULE_RRHVM, "Encountered NULL node or name during traversal, skipping");
+        // Prevent infinite loops
+        if (++traversalCount > MAX_TRAVERSAL) {
+            DBGLOG(MODULE_RRHVM, "Traversal limit exceeded, aborting");
+            return false;
+        }
+        
+        // Enhanced safety checks
+        if (!kernNode) {
+            DBGLOG(MODULE_RRHVM, "Encountered NULL node during traversal, skipping");
             continue;
         }
-        if (strcmp(kernNode->oid_name, "kern") == 0) {
+        
+        if (!kernNode->oid_name) {
+            DBGLOG(MODULE_RRHVM, "Encountered node with NULL name, skipping");
+            continue;
+        }
+        
+        // Safe string comparison with length limit
+        if (strnlen(kernNode->oid_name, 32) < 32 && strcmp(kernNode->oid_name, "kern") == 0) {
             DBGLOG(MODULE_RRHVM, "Found 'kern' node.");
             break;
         }
-    }
-
-    // check if kern node was found
+    }    // check if kern node was found
     if (!kernNode) {
         DBGLOG(MODULE_RRHVM, "Failed to locate 'kern' node in sysctl tree.");
         return false;
-    }    // traverse 'kern' to find 'hv_vmm_present'
+    }
+    
+    // Validate kernNode before accessing its members
+    if (!kernNode->oid_arg1) {
+        DBGLOG(MODULE_RRHVM, "kern node has null oid_arg1");
+        return false;
+    }
+    
+    // traverse 'kern' to find 'hv_vmm_present'
     sysctl_oid_list *kernChildren = reinterpret_cast<sysctl_oid_list *>(kernNode->oid_arg1);
     if (!kernChildren) {
         DBGLOG(MODULE_RRHVM, "kern node has no children");
@@ -100,13 +149,28 @@ bool reRouteHvVmm(KernelPatcher &patcher) {    // Ensure that sysctlChildrenAddr
     }
     
     sysctl_oid *vmmNode = nullptr;
+    traversalCount = 0; // Reset counter for kern children
+    
     SLIST_FOREACH(vmmNode, kernChildren, oid_link) {
-        // Add safety check for NULL node and name
-        if (!vmmNode || !vmmNode->oid_name) {
-            DBGLOG(MODULE_RRHVM, "Encountered NULL node or name in kern children, skipping");
+        // Prevent infinite loops in kern children
+        if (++traversalCount > MAX_TRAVERSAL) {
+            DBGLOG(MODULE_RRHVM, "Kern children traversal limit exceeded, aborting");
+            return false;
+        }
+        
+        // Enhanced safety checks for vmm node
+        if (!vmmNode) {
+            DBGLOG(MODULE_RRHVM, "Encountered NULL node in kern children, skipping");
             continue;
         }
-        if (strcmp(vmmNode->oid_name, "hv_vmm_present") == 0) {
+        
+        if (!vmmNode->oid_name) {
+            DBGLOG(MODULE_RRHVM, "Encountered node with NULL name in kern children, skipping");
+            continue;
+        }
+        
+        // Safe string comparison with length limit
+        if (strnlen(vmmNode->oid_name, 32) < 32 && strcmp(vmmNode->oid_name, "hv_vmm_present") == 0) {
             DBGLOG(MODULE_RRHVM, "Found 'hv_vmm_present' node.");
             break;
         }
@@ -122,18 +186,27 @@ bool reRouteHvVmm(KernelPatcher &patcher) {    // Ensure that sysctlChildrenAddr
     if (vmmNode->oid_handler == nullptr) {
         DBGLOG(MODULE_RRHVM, "Failed to save original 'hv_vmm_present' sysctl handler: The existing handler was NULL.");
         return false; // Return false as this is considered a failure condition.
-    }
-	
-    // save the original handler in the global variable
+    }    // save the original handler in the global variable
 	VMM::originalHvVmmHandler = vmmNode->oid_handler;
     DBGLOG(MODULE_RRHVM, "Successfully saved original 'hv_vmm_present' sysctl handler.");
     
-    // ensure kernel r/w access
-    PANIC_COND(MachInfo::setKernelWriting(true, patcher.kernelWriteLock) != KERN_SUCCESS, MODULE_SHORT, "Failed to enable God mode. (Kernel R/W)");
+    // Safely enable kernel writing with error checking (using correct Lilu API)
+    kern_return_t writeResult = MachInfo::setKernelWriting(true, KernelPatcher::kernelWriteLock);
+    if (writeResult != KERN_SUCCESS) {
+        DBGLOG(MODULE_ERROR, "Failed to enable kernel writing (error: %d). Aborting hv_vmm_present reroute.", writeResult);
+        return false;
+    }
     
     // reroute the handler to our custom function
     vmmNode->oid_handler = phtm_sysctl_vmm_present;
-    MachInfo::setKernelWriting(false, patcher.kernelWriteLock);
+    
+    // Safely disable kernel writing
+    writeResult = MachInfo::setKernelWriting(false, KernelPatcher::kernelWriteLock);
+    if (writeResult != KERN_SUCCESS) {
+        DBGLOG(MODULE_WARN, "Warning: Failed to disable kernel writing (error: %d). System may be unstable.", writeResult);
+        // Don't return false here as the reroute was successful
+    }
+    
     DBGLOG(MODULE_RRHVM, "Successfully rerouted 'hv_vmm_present' sysctl handler.");
     return true;
 

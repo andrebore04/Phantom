@@ -22,21 +22,28 @@ mach_vm_address_t PHTM::gSysctlChildrenAddr = 0;
 const bool PHTM::IS_INTERNAL = false; // MUST CHANCE THIS TO FALSE BEFORE CREATING COMMITS
 
 // Function to get _sysctl__children memory address
-mach_vm_address_t PHTM::sysctlChildrenAddr(KernelPatcher &patcher) {    // Resolve the _sysctl__children symbol with the given patcher
+mach_vm_address_t PHTM::sysctlChildrenAddr(KernelPatcher &patcher) {
+    // Resolve the _sysctl__children symbol with the given patcher
     mach_vm_address_t resolvedAddress = patcher.solveSymbol(KernelPatcher::KernelID, "_sysctl__children");
     
     // Check if the address was successfully resolved, else return 0
     if (resolvedAddress) {
         DBGLOG(MODULE_SYSCA, "Resolved _sysctl__children at address: 0x%llx", resolvedAddress);
         
-        // Validate the resolved address is reasonable for kernel space
-        if (resolvedAddress < 0xffffff8000000000ULL) {
-            DBGLOG(MODULE_SYSCA, "Resolved address appears invalid (too low): 0x%llx", resolvedAddress);
+        // Enhanced validation for kernel space addresses
+        if (resolvedAddress < 0xffffff8000000000ULL || resolvedAddress > 0xfffffffffffffffULL) {
+            DBGLOG(MODULE_SYSCA, "Resolved address appears invalid (out of kernel range): 0x%llx", resolvedAddress);
+            return 0;
+        }
+        
+        // Additional validation - check if address is aligned
+        if (resolvedAddress & 0x7) {
+            DBGLOG(MODULE_SYSCA, "Resolved address is not 8-byte aligned: 0x%llx", resolvedAddress);
             return 0;
         }
 
-        // Disable dangerous debug iteration that can cause kernel panics
-        #if DEBUG && 0
+        // Completely disable debug iteration - this can cause kernel panics
+        #if 0
         sysctl_oid_list *sysctlChildrenList = reinterpret_cast<sysctl_oid_list *>(resolvedAddress);
         DBGLOG(MODULE_SYSCA, "Sysctl children list at address: 0x%llx", reinterpret_cast<mach_vm_address_t>(sysctlChildrenList));
         sysctl_oid *oid;
